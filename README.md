@@ -26,4 +26,4 @@ Advanced Google Sheets automation tool that combines JSON data conversion with c
 ### ⏰ Automation
 - **Daily Auto-Updates**: Scheduled tracker refresh
 - **Email Notifications**: Optional stakeholder alerts
-- **Export
+
