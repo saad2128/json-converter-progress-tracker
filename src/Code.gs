@@ -1,6 +1,6 @@
 /**
  * Combined JSON Converter & Progress Tracker
- * Features: JSON conversion + comprehensive tracking with daily/weekly stats
+ * Features: JSON conversion + comprehensive tracking with daily/weekly stats + JSON Export
  */
 
 // ========================================
@@ -113,6 +113,270 @@ function combineAllRowsToJSON() {
   updateTracker();
   
   SpreadsheetApp.getUi().alert('Success', `JSON data added and tracker updated for ${numRows - 1} row(s)`, SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+// ========================================
+// JSON EXPORT FUNCTIONS (Direct Download)
+// ========================================
+
+function exportActiveRowAsJSON() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const activeRange = sheet.getActiveRange();
+  const activeRow = activeRange.getRow();
+  
+  if (activeRow === 1) {
+    SpreadsheetApp.getUi().alert('Error', 'Cannot export header row. Please select a data row.', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+  
+  const jsonData = convertRowToJSON(sheet, activeRow);
+  if (!jsonData) return;
+  
+  const fileName = `Row_${activeRow}_Export_${new Date().toISOString().split('T')[0]}.json`;
+  createDownloadableJSONFile([jsonData], fileName);
+}
+
+function exportSelectedRowsAsJSON() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const activeRange = sheet.getActiveRange();
+  const startRow = activeRange.getRow();
+  const numRows = activeRange.getNumRows();
+  
+  const jsonArray = [];
+  
+  for (let rowOffset = 0; rowOffset < numRows; rowOffset++) {
+    const currentRow = startRow + rowOffset;
+    if (currentRow === 1) continue; // Skip header row
+    
+    const jsonData = convertRowToJSON(sheet, currentRow);
+    if (jsonData) {
+      jsonArray.push(jsonData);
+    }
+  }
+  
+  if (jsonArray.length === 0) {
+    SpreadsheetApp.getUi().alert('Info', 'No valid data rows found to export', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+  
+  const fileName = `Rows_${startRow}-${startRow + numRows - 1}_Export_${new Date().toISOString().split('T')[0]}.json`;
+  createDownloadableJSONFile(jsonArray, fileName);
+}
+
+function exportAllRowsAsJSON() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const dataRange = sheet.getDataRange();
+  const numRows = dataRange.getNumRows();
+  
+  if (numRows <= 1) {
+    SpreadsheetApp.getUi().alert('Info', 'No data rows to export', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+  
+  const jsonArray = [];
+  
+  for (let currentRow = 2; currentRow <= numRows; currentRow++) {
+    const jsonData = convertRowToJSON(sheet, currentRow);
+    if (jsonData) {
+      jsonArray.push(jsonData);
+    }
+  }
+  
+  if (jsonArray.length === 0) {
+    SpreadsheetApp.getUi().alert('Info', 'No valid data found to export', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+  
+  const fileName = `${SpreadsheetApp.getActiveSpreadsheet().getName()}_All_Rows_Export_${new Date().toISOString().split('T')[0]}.json`;
+  createDownloadableJSONFile(jsonArray, fileName);
+}
+
+function convertRowToJSON(sheet, rowNumber) {
+  const dataRange = sheet.getDataRange();
+  const numCols = dataRange.getNumColumns();
+  const headers = sheet.getRange(1, 1, 1, numCols).getValues()[0];
+  const rowData = sheet.getRange(rowNumber, 1, 1, numCols).getValues()[0];
+  
+  const completeJsonColIndex = headers.indexOf('complete_json');
+  const jsonObject = {};
+  
+  // Add row identifier
+  jsonObject._row_number = rowNumber;
+  jsonObject._exported_at = new Date().toISOString();
+  
+  for (let i = 2; i < headers.length; i++) {
+    if (i === completeJsonColIndex) continue;
+    const header = headers[i] || `Column_${i + 1}`;
+    jsonObject[header] = rowData[i];
+  }
+  
+  return jsonObject;
+}
+
+function createDownloadableJSONFile(jsonArray, fileName) {
+  try {
+    // Create JSON string with proper formatting
+    const jsonString = JSON.stringify(jsonArray, null, 2);
+    
+    // Create file in Google Drive
+    const blob = Utilities.newBlob(jsonString, 'application/json', fileName);
+    const file = DriveApp.createFile(blob);
+    
+    // Set file sharing to allow download
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    // Get download URL
+    const fileId = file.getId();
+    const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+    const viewUrl = file.getUrl();
+    
+    // Create success message with download instructions
+    const message = `✅ JSON file created successfully!
+
+📁 File Name: ${fileName}
+📊 Records: ${jsonArray.length}
+📅 Created: ${new Date().toLocaleString()}
+
+🔗 DOWNLOAD OPTIONS:
+
+1. DIRECT DOWNLOAD:
+   Click this link to download immediately:
+   ${downloadUrl}
+
+2. VIEW IN DRIVE:
+   ${viewUrl}
+
+💡 TIP: Right-click the direct download link and select "Save link as..." if the file opens in browser instead of downloading.`;
+    
+    SpreadsheetApp.getUi().alert('JSON Export Complete', message, SpreadsheetApp.getUi().ButtonSet.OK);
+    
+  } catch (error) {
+    SpreadsheetApp.getUi().alert('Error', `Failed to create JSON file: ${error.toString()}`, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+function createJSONFile() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt(
+    'Create Downloadable JSON File',
+    'Choose what to export:\n\n1 - Active Row Only\n2 - Selected Rows\n3 - All Data Rows\n\nEnter your choice (1, 2, or 3):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  
+  const choice = response.getResponseText().trim();
+  
+  switch (choice) {
+    case '1':
+      exportActiveRowAsJSON();
+      break;
+    case '2':
+      exportSelectedRowsAsJSON();
+      break;
+    case '3':
+      exportAllRowsAsJSON();
+      break;
+    default:
+      ui.alert('Invalid Choice', 'Please enter 1, 2, or 3.', ui.ButtonSet.OK);
+  }
+}
+
+function quickExportJSON() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'Quick JSON Export',
+    'Export all data rows as downloadable JSON file?',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (response === ui.Button.YES) {
+    exportAllRowsAsJSON();
+  }
+}
+
+function exportWithCustomName() {
+  const ui = SpreadsheetApp.getUi();
+  
+  // Get custom file name
+  const nameResponse = ui.prompt(
+    'Custom Export Name',
+    'Enter a custom name for your JSON file (without .json extension):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (nameResponse.getSelectedButton() !== ui.Button.OK) return;
+  
+  const customName = nameResponse.getResponseText().trim();
+  if (!customName) {
+    ui.alert('Error', 'Please enter a valid file name.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Get export scope
+  const scopeResponse = ui.prompt(
+    'Export Scope',
+    'What to export:\n1 - Active Row\n2 - Selected Rows\n3 - All Rows\n\nEnter choice:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (scopeResponse.getSelectedButton() !== ui.Button.OK) return;
+  
+  const choice = scopeResponse.getResponseText().trim();
+  const sheet = SpreadsheetApp.getActiveSheet();
+  let jsonArray = [];
+  let fileName = `${customName}_${new Date().toISOString().split('T')[0]}.json`;
+  
+  switch (choice) {
+    case '1':
+      const activeRow = sheet.getActiveRange().getRow();
+      if (activeRow === 1) {
+        ui.alert('Error', 'Cannot export header row.', ui.ButtonSet.OK);
+        return;
+      }
+      const jsonData = convertRowToJSON(sheet, activeRow);
+      if (jsonData) jsonArray = [jsonData];
+      break;
+      
+    case '2':
+      const activeRange = sheet.getActiveRange();
+      const startRow = activeRange.getRow();
+      const numRows = activeRange.getNumRows();
+      
+      for (let rowOffset = 0; rowOffset < numRows; rowOffset++) {
+        const currentRow = startRow + rowOffset;
+        if (currentRow === 1) continue;
+        
+        const rowData = convertRowToJSON(sheet, currentRow);
+        if (rowData) {
+          jsonArray.push(rowData);
+        }
+      }
+      break;
+      
+    case '3':
+      const dataRange = sheet.getDataRange();
+      const numDataRows = dataRange.getNumRows();
+      
+      for (let currentRow = 2; currentRow <= numDataRows; currentRow++) {
+        const rowData = convertRowToJSON(sheet, currentRow);
+        if (rowData) {
+          jsonArray.push(rowData);
+        }
+      }
+      break;
+      
+    default:
+      ui.alert('Invalid Choice', 'Please enter 1, 2, or 3.', ui.ButtonSet.OK);
+      return;
+  }
+  
+  if (jsonArray.length === 0) {
+    ui.alert('No Data', 'No valid data found to export.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  createDownloadableJSONFile(jsonArray, fileName);
 }
 
 // ========================================
@@ -1057,6 +1321,14 @@ function onOpen() {
       .addItem('Convert Active Row to JSON', 'combineActiveRowToJSON')
       .addItem('Convert Selected Rows to JSON', 'combineSelectedRowsToJSON')
       .addItem('Convert All Rows to JSON', 'combineAllRowsToJSON'))
+    .addSeparator()
+    .addSubMenu(ui.createMenu('📤 JSON Export Options')
+      .addItem('Export Active Row as JSON', 'exportActiveRowAsJSON')
+      .addItem('Export Selected Rows as JSON', 'exportSelectedRowsAsJSON')
+      .addItem('Export All Rows as JSON', 'exportAllRowsAsJSON')
+      .addSeparator()
+      .addItem('Create JSON File', 'createJSONFile')
+      .addItem('Export to Google Drive', 'exportJSONToGoogleDrive'))
     .addSeparator()
     .addSubMenu(ui.createMenu('📊 Progress Tracker')
       .addItem('Create Tracker Tab', 'createTrackerTab')
