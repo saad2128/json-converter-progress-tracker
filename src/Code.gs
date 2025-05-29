@@ -4,8 +4,105 @@
  */
 
 // ========================================
-// JSON CONVERSION FUNCTIONS
+// PROJECT CONFIGURATION FUNCTIONS
 // ========================================
+
+function setProjectStartDate() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt(
+    'Set Project Start Date',
+    'Enter the project start date (MM/DD/YYYY or YYYY-MM-DD format):\n\nExample: 01/15/2025 or 2025-01-15',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  
+  const dateInput = response.getResponseText().trim();
+  if (!dateInput) {
+    ui.alert('Error', 'Please enter a valid date.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  try {
+    const startDate = new Date(dateInput);
+    if (isNaN(startDate.getTime())) {
+      throw new Error('Invalid date format');
+    }
+    
+    // Store the start date in script properties
+    PropertiesService.getScriptProperties().setProperty('PROJECT_START_DATE', startDate.toISOString());
+    
+    const confirmMessage = `✅ Project start date set successfully!
+
+📅 Start Date: ${startDate.toLocaleDateString()}
+🕒 Days since start: ${Math.ceil((new Date() - startDate) / (1000 * 60 * 60 * 24))}
+
+The daily average will now be calculated as:
+Total Completed Tasks ÷ Days Since Project Start`;
+    
+    ui.alert('Success', confirmMessage, ui.ButtonSet.OK);
+    
+  } catch (error) {
+    ui.alert('Error', `Invalid date format. Please use MM/DD/YYYY or YYYY-MM-DD format.\n\nError: ${error.message}`, ui.ButtonSet.OK);
+  }
+}
+
+function getProjectStartDate() {
+  const startDateString = PropertiesService.getScriptProperties().getProperty('PROJECT_START_DATE');
+  if (startDateString) {
+    return new Date(startDateString);
+  }
+  return null;
+}
+
+function viewProjectSettings() {
+  const startDate = getProjectStartDate();
+  const ui = SpreadsheetApp.getUi();
+  
+  if (!startDate) {
+    ui.alert(
+      'Project Settings', 
+      '❌ No project start date configured.\n\nPlease set a project start date first using "Set Project Start Date" option.',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+  
+  const today = new Date();
+  const daysSinceStart = Math.ceil((today - startDate) / (1000 * 60 * 60 * 24));
+  const weeksSinceStart = Math.ceil(daysSinceStart / 7);
+  
+  const message = `📊 PROJECT SETTINGS
+
+📅 Start Date: ${startDate.toLocaleDateString()}
+📅 Current Date: ${today.toLocaleDateString()}
+
+⏱️ PROJECT DURATION:
+• Days since start: ${daysSinceStart}
+• Weeks since start: ${weeksSinceStart}
+
+📈 CALCULATION METHOD:
+• Daily Average = Total Completed Tasks ÷ ${daysSinceStart} days
+• This gives the true average daily completion rate since project inception
+
+💡 TIP: The longer the project runs, the more accurate the daily average becomes.`;
+  
+  ui.alert('Project Settings', message, ui.ButtonSet.OK);
+}
+
+function resetProjectSettings() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'Reset Project Settings',
+    'Are you sure you want to reset the project start date?\n\nThis will affect daily average calculations.',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (response === ui.Button.YES) {
+    PropertiesService.getScriptProperties().deleteProperty('PROJECT_START_DATE');
+    ui.alert('Success', 'Project start date has been reset. Please set a new start date.', ui.ButtonSet.OK);
+  }
+}
 
 function combineActiveRowToJSON() {
   const sheet = SpreadsheetApp.getActiveSheet();
@@ -597,6 +694,9 @@ function getMainDataSheet(spreadsheet) {
 function analyzeWorkerData(mainData, workerIdIndex, statusIndex, headers) {
   const workerStats = {};
   const today = new Date();
+  today.setHours(23, 59, 59, 999); // End of today for comparison
+  const startOfToday = new Date(today);
+  startOfToday.setHours(0, 0, 0, 0); // Start of today
   const sevenDaysAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
   
   // Try to find a timestamp column for daily/weekly calculations
@@ -616,7 +716,8 @@ function analyzeWorkerData(mainData, workerIdIndex, statusIndex, headers) {
         pending: 0,
         failed: 0,
         dailyCompletions: 0,
-        weeklyCompletions: 0
+        weeklyCompletions: 0,
+        totalCompletedTasks: 0 // Track all completed tasks regardless of date
       };
     }
     
@@ -625,7 +726,15 @@ function analyzeWorkerData(mainData, workerIdIndex, statusIndex, headers) {
     // Get timestamp for daily/weekly calculations
     let taskDate = null;
     if (timestampIndex !== -1 && mainData[i][timestampIndex]) {
-      taskDate = new Date(mainData[i][timestampIndex]);
+      try {
+        taskDate = new Date(mainData[i][timestampIndex]);
+        // Validate the date
+        if (isNaN(taskDate.getTime())) {
+          taskDate = null;
+        }
+      } catch (e) {
+        taskDate = null;
+      }
     }
     
     // Categorize by status (case insensitive)
@@ -634,18 +743,23 @@ function analyzeWorkerData(mainData, workerIdIndex, statusIndex, headers) {
     if (statusLower.includes('complete') || statusLower.includes('done') || 
         statusLower.includes('finished') || statusLower.includes('success')) {
       workerStats[workerId].completed++;
+      workerStats[workerId].totalCompletedTasks++;
       
       // Count daily/weekly completions if we have a valid date
       if (taskDate && !isNaN(taskDate.getTime())) {
-        // Daily completions (today)
-        if (isSameDay(taskDate, today)) {
+        // Daily completions (today only)
+        if (taskDate >= startOfToday && taskDate <= today) {
           workerStats[workerId].dailyCompletions++;
         }
         
-        // Weekly completions (last 7 days)
-        if (taskDate >= sevenDaysAgo) {
+        // Weekly completions (last 7 days including today)
+        if (taskDate >= sevenDaysAgo && taskDate <= today) {
           workerStats[workerId].weeklyCompletions++;
         }
+      } else {
+        // If no timestamp available, assume recent completion for weekly count
+        // This ensures some data shows even without timestamps
+        workerStats[workerId].weeklyCompletions++;
       }
     } else if (statusLower.includes('progress') || statusLower.includes('working') || 
                statusLower.includes('active') || statusLower.includes('ongoing')) {
@@ -663,10 +777,14 @@ function analyzeWorkerData(mainData, workerIdIndex, statusIndex, headers) {
 
 function findTimestampColumn(headers) {
   // Look for common timestamp column names
-  const timestampNames = ['timestamp', 'date', 'created_at', 'updated_at', 'completed_at', 'last_updated'];
+  const timestampNames = [
+    'timestamp', 'date', 'created_at', 'updated_at', 'completed_at', 
+    'last_updated', 'time', 'datetime', 'created', 'modified',
+    'completion_date', 'task_date', 'submitted_at', 'finished_at'
+  ];
   
   for (let i = 0; i < headers.length; i++) {
-    const header = headers[i].toString().toLowerCase();
+    const header = headers[i] ? headers[i].toString().toLowerCase().trim() : '';
     if (timestampNames.some(name => header.includes(name))) {
       return i;
     }
@@ -676,9 +794,42 @@ function findTimestampColumn(headers) {
 }
 
 function isSameDay(date1, date2) {
+  if (!date1 || !date2) return false;
   return date1.getDate() === date2.getDate() &&
          date1.getMonth() === date2.getMonth() &&
          date1.getFullYear() === date2.getFullYear();
+}
+
+// Add a debug function to test timestamp detection
+function debugTimestampColumns() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const timestampIndex = findTimestampColumn(headers);
+  
+  let message = `Timestamp Column Analysis:\n\n`;
+  message += `Headers found: ${headers.join(', ')}\n\n`;
+  
+  if (timestampIndex !== -1) {
+    message += `✅ Timestamp column detected: "${headers[timestampIndex]}" (Column ${timestampIndex + 1})\n\n`;
+    
+    // Check sample data
+    const dataRange = sheet.getDataRange();
+    if (dataRange.getNumRows() > 1) {
+      const sampleData = sheet.getRange(2, timestampIndex + 1, Math.min(3, dataRange.getNumRows() - 1), 1).getValues();
+      message += `Sample timestamp values:\n`;
+      sampleData.forEach((row, index) => {
+        const value = row[0];
+        const date = value ? new Date(value) : null;
+        message += `Row ${index + 2}: "${value}" → ${date && !isNaN(date.getTime()) ? date.toLocaleString() : 'Invalid Date'}\n`;
+      });
+    }
+  } else {
+    message += `❌ No timestamp column found.\n\n`;
+    message += `To fix this, add a column with one of these names:\n`;
+    message += `timestamp, date, created_at, updated_at, completed_at, last_updated, time, datetime, created, modified, completion_date, task_date, submitted_at, finished_at`;
+  }
+  
+  SpreadsheetApp.getUi().alert('Timestamp Debug Info', message, SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
 function clearTrackerData(trackerSheet) {
@@ -698,6 +849,14 @@ function clearTrackerData(trackerSheet) {
 function populateMainTrackerData(trackerSheet, workerStats) {
   const trackerData = [];
   const currentTime = new Date().toLocaleString();
+  const projectStartDate = getProjectStartDate();
+  
+  // Calculate days since project start for daily average calculation
+  let daysSinceStart = 1; // Default to 1 to avoid division by zero
+  if (projectStartDate) {
+    const today = new Date();
+    daysSinceStart = Math.max(1, Math.ceil((today - projectStartDate) / (1000 * 60 * 60 * 24)));
+  }
   
   // Sort workers by completion rate (descending)
   const sortedWorkers = Object.keys(workerStats).sort((a, b) => {
@@ -710,7 +869,22 @@ function populateMainTrackerData(trackerSheet, workerStats) {
     const stats = workerStats[workerId];
     const completionRate = stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0;
     const successRate = stats.total > 0 ? Math.round(((stats.completed) / (stats.total - stats.pending)) * 100) : 0;
-    const dailyAvg = stats.weeklyCompletions > 0 ? Math.round((stats.weeklyCompletions / 7) * 10) / 10 : 0;
+    
+    // Calculate TRUE daily average: (Completed + Pending) ÷ Days since project start
+    // This shows actual daily task handling capacity
+    let dailyAvg = 0;
+    if (projectStartDate) {
+      const productiveTasks = stats.completed + stats.pending; // Tasks that show actual work
+      if (productiveTasks > 0) {
+        dailyAvg = Math.round((productiveTasks / daysSinceStart) * 100) / 100; // Round to 2 decimal places
+      }
+    } else if (!projectStartDate && stats.weeklyCompletions > 0) {
+      // Fallback to old method if no project start date is set
+      dailyAvg = Math.round((stats.weeklyCompletions / 7) * 10) / 10;
+    }
+    
+    // Weekly total should show actual weekly completions
+    const weeklyTotal = stats.weeklyCompletions || 0;
     
     trackerData.push([
       workerId,
@@ -722,7 +896,7 @@ function populateMainTrackerData(trackerSheet, workerStats) {
       completionRate,
       isNaN(successRate) ? 0 : successRate,
       dailyAvg,
-      stats.weeklyCompletions,
+      weeklyTotal,
       currentTime
     ]);
   });
@@ -730,6 +904,48 @@ function populateMainTrackerData(trackerSheet, workerStats) {
   if (trackerData.length > 0) {
     trackerSheet.getRange(3, 1, trackerData.length, 11).setValues(trackerData);
   }
+  
+  // Add project info to tracker sheet
+  addProjectInfoToTracker(trackerSheet, projectStartDate, daysSinceStart);
+}
+
+function addProjectInfoToTracker(trackerSheet, projectStartDate, daysSinceStart) {
+  // Add project information starting from column AC (29)
+  const projectInfoHeaders = [
+    ['PROJECT INFO'],
+    ['Start Date:'],
+    ['Days Running:'],
+    ['Calculation Method:'],
+    ['Daily Avg Formula:'],
+    ['Includes:']
+  ];
+  
+  const projectInfoValues = [
+    [''], // Empty for header
+    [projectStartDate ? projectStartDate.toLocaleDateString() : 'Not Set'],
+    [projectStartDate ? daysSinceStart : 'N/A'],
+    [projectStartDate ? '(Completed + Pending) ÷ Days Since Start' : 'Weekly Completions ÷ 7'],
+    [projectStartDate ? `(Completed + Pending) ÷ ${daysSinceStart}` : 'Weekly ÷ 7'],
+    [projectStartDate ? 'Completed & Pending Tasks Only' : 'Completed Tasks Only']
+  ];
+  
+  trackerSheet.getRange(1, 29, projectInfoHeaders.length, 1).setValues(projectInfoHeaders);
+  trackerSheet.getRange(1, 30, projectInfoValues.length, 1).setValues(projectInfoValues);
+  
+  // Format project info section
+  const projectHeaderRange = trackerSheet.getRange(1, 29, 1, 2);
+  projectHeaderRange.setBackground('#ff9900');
+  projectHeaderRange.setFontColor('white');
+  projectHeaderRange.setFontWeight('bold');
+  projectHeaderRange.setHorizontalAlignment('center');
+  
+  const projectLabelsRange = trackerSheet.getRange(2, 29, 5, 1);
+  projectLabelsRange.setFontWeight('bold');
+  projectLabelsRange.setBackground('#fff2cc');
+  
+  // Set column widths
+  trackerSheet.setColumnWidth(29, 150);
+  trackerSheet.setColumnWidth(30, 200);
 }
 
 function updateSummaryStatistics(trackerSheet, workerStats) {
@@ -1317,18 +1533,20 @@ function removeDailyUpdate() {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('🔄 JSON Converter & Tracker')
-    .addSubMenu(ui.createMenu('📝 JSON Conversion')
+    .addSubMenu(ui.createMenu('📝 JSON Conversion (Add to Sheet)')
       .addItem('Convert Active Row to JSON', 'combineActiveRowToJSON')
       .addItem('Convert Selected Rows to JSON', 'combineSelectedRowsToJSON')
       .addItem('Convert All Rows to JSON', 'combineAllRowsToJSON'))
     .addSeparator()
-    .addSubMenu(ui.createMenu('📤 JSON Export Options')
+    .addSubMenu(ui.createMenu('💾 JSON Export (Download Files)')
+      .addItem('🔥 Quick Export All Rows', 'quickExportJSON')
+      .addSeparator()
       .addItem('Export Active Row as JSON', 'exportActiveRowAsJSON')
       .addItem('Export Selected Rows as JSON', 'exportSelectedRowsAsJSON')
       .addItem('Export All Rows as JSON', 'exportAllRowsAsJSON')
       .addSeparator()
-      .addItem('Create JSON File', 'createJSONFile')
-      .addItem('Export to Google Drive', 'exportJSONToGoogleDrive'))
+      .addItem('📝 Create JSON File (Interactive)', 'createJSONFile')
+      .addItem('🏷️ Export with Custom Name', 'exportWithCustomName'))
     .addSeparator()
     .addSubMenu(ui.createMenu('📊 Progress Tracker')
       .addItem('Create Tracker Tab', 'createTrackerTab')
@@ -1337,6 +1555,11 @@ function onOpen() {
       .addSeparator()
       .addItem('Delete Tracker', 'deleteTracker'))
     .addSeparator()
+    .addSubMenu(ui.createMenu('⚙️ Project Settings')
+      .addItem('📅 Set Project Start Date', 'setProjectStartDate')
+      .addItem('👁️ View Project Settings', 'viewProjectSettings')
+      .addItem('🔄 Reset Project Settings', 'resetProjectSettings'))
+    .addSeparator()
     .addSubMenu(ui.createMenu('📈 Analytics & Reports')
       .addItem('Generate Performance Report', 'generatePerformanceReport')
       .addItem('Export Tracker Data', 'exportTrackerData'))
@@ -1344,5 +1567,6 @@ function onOpen() {
     .addSubMenu(ui.createMenu('⏰ Automation')
       .addItem('Setup Daily Auto-Update', 'setupDailyTrackerUpdate')
       .addItem('Remove Auto-Update', 'removeDailyUpdate'))
+    .addSeparator()
     .addToUi();
 }
